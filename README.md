@@ -3,10 +3,9 @@
 A rust library which empowers the user to invoke functions remotely without injecting an entire module to do it.
 
 ```rust
-    use winapi::um::{libloaderapi::{GetProcAddress, GetModuleHandleA}, winuser::MB_OKCANCEL};
-
     // Example of usage
-    fn call_msgbox(process: HANDLE, msg: &str, title: &str) -> anyhow::Result<(), anyhow::Error>
+    #[allow(unused)]
+    fn call_msgbox(msg: &str, title: &str) -> anyhow::Result<(), anyhow::Error>
     {
         let modname = "user32.dll\0";
         let procname = "MessageBoxW\0";
@@ -18,17 +17,23 @@ A rust library which empowers the user to invoke functions remotely without inje
         if addr.is_null() {
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
-        let mut ctx = create_context(process)?;
+        let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
         ctx.push_u8(0)?;
         ctx.push_wstring(msg.to_string())?;
         ctx.push_wstring(title.to_string())?;
         ctx.push_u32(MB_OKCANCEL)?;
-        let ret = ctx.call_with_return(addr as u64)?;
+        let mut ret = ctx.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
         ctx.execute()?;
         let retval = ret.read()?;
         println!("ret: 0x{:X}", retval);
+        println!("Leaks: {}", ctx.has_leaks());
+        // Not required, Drop is implemented and this will be deallocated automatically
+        // This is just for explicit deallocation
+        println!("Is Return Deallocated first try: {}", ret.is_deallocated());
+        ret.deallocate()?;
+        println!("Is Return Deallocated second try: {}", ret.is_deallocated());
         Ok(())
     }
 ```
