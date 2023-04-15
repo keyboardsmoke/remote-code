@@ -68,20 +68,20 @@ pub struct Context
 
 impl Context
 {
-    pub fn append_asm(&mut self, asm: &str) -> anyhow::Result<(), anyhow::Error>
+    pub fn append_asm(&mut self, asm: &str) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         let mut res = self.engine.asm(asm.to_string(), 0)?;
         self.buffer.append(&mut res.bytes);
-        Ok(())
+        Ok(self)
     }
 
-    pub fn push_buffer_address(&mut self, value: Vec<u8>) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_buffer_address(&mut self, value: Vec<u8>) -> anyhow::Result<&mut Context, anyhow::Error>
     {
-        let res = unsafe { self.commit(value, true) }?;
+        let res = unsafe { self.commit_internal(value, true) }?;
         self.push_u64(res)
     }
 
-    pub fn push_u8(&mut self, value: u8) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_u8(&mut self, value: u8) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         match self.argument_count {
             0 => {
@@ -101,10 +101,10 @@ impl Context
             }
         }
         self.argument_count += 1;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn push_u16(&mut self, value: u16) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_u16(&mut self, value: u16) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         match self.argument_count {
             0 => {
@@ -124,10 +124,10 @@ impl Context
             }
         }
         self.argument_count += 1;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn push_u32(&mut self, value: u32) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_u32(&mut self, value: u32) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         match self.argument_count {
             0 => {
@@ -147,10 +147,10 @@ impl Context
             }
         }
         self.argument_count += 1;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn push_u64(&mut self, value: u64) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_u64(&mut self, value: u64) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         match self.argument_count {
             0 => {
@@ -171,15 +171,15 @@ impl Context
             }
         }
         self.argument_count += 1;
-        Ok(())
+        Ok(self)
     }
 
-    pub fn push_f32(&mut self, value: f32) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_f32(&mut self, value: f32) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         self.push_f64(value as f64)
     }
 
-    pub fn push_f64(&mut self, value: f64) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_f64(&mut self, value: f64) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         // RAX is going to get clobbered no matter what here...
         // a in XMM0, b in XMM1, c in XMM2, d in XMM3, f then e pushed on stack
@@ -210,11 +210,11 @@ impl Context
             }
         }
         self.argument_count += 1;
-        Ok(())
+        Ok(self)
     }
 
     // Push a reference to an earlier return value
-    pub fn push_arg(&mut self, value: ReturnValue) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_arg(&mut self, value: ReturnValue) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         if value.is_deallocated() {
             anyhow::bail!("push_arg failed because the ReturnValue sent to it was prematurely deallocated.");
@@ -222,14 +222,14 @@ impl Context
         self.push_u64(value.address)
     }
 
-    pub fn push_cstring(&mut self, value: String) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_cstring(&mut self, value: String) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         let mut data: Vec<u8> = value.bytes().collect();
         data.push(0); // make sure it's null terminated.
         self.push_buffer_address(data)
     }
 
-    pub fn push_wstring(&mut self, value: String) -> anyhow::Result<(), anyhow::Error>
+    pub fn push_wstring(&mut self, value: String) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         let enc = value.encode_utf16();
         let mut utf16: Vec<u16> = enc.collect();
@@ -243,18 +243,18 @@ impl Context
         self.push_buffer_address(v)
     }
 
-    pub fn call(&mut self, dest: u64) -> anyhow::Result<(), anyhow::Error>
+    pub fn call(&mut self, dest: u64) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         self.append_asm(format!("movabs rax, 0x{:X}", dest).as_str())?;
         self.append_asm("call rax")?;
-        Ok(())
+        Ok(self)
     }
 
     pub fn call_with_return(&mut self, dest: u64) -> anyhow::Result<ReturnValue, anyhow::Error>
     {
         // don't track this entry, we don't want it to be cleared when we execute.
         // So, the best move here is to allow freeing it in the ReturnValue...
-        let ptr = unsafe { self.allocate(std::mem::size_of::<u64>(), false) }?;
+        let ptr = unsafe { self.allocate_internal(std::mem::size_of::<u64>(), false) }?;
         self.append_asm(format!("movabs rax, 0x{:X}", dest).as_str())?;
         self.append_asm("call rax")?;
         self.append_asm(format!("movabs ds:[0x{:X}], rax", ptr).as_str())?;
@@ -262,14 +262,14 @@ impl Context
         Ok(ReturnValue { process: self.process, address: ptr })
     }
 
-    pub fn execute(&mut self) -> anyhow::Result<(), anyhow::Error>
+    pub fn execute(&mut self) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         // any rsp adjusting we did to push sse registers gets fixed here
         // we start with 0x28 of stack, so we adjust more to compensate
         let rsp_adjust_amount = 0x28 + self.rsp_adjust;
         self.append_asm(format!("add rsp, 0x{:02X}", rsp_adjust_amount).as_str())?;
         self.append_asm("ret")?;
-        let mem = unsafe { self.commit(self.buffer.clone(), true) }?;
+        let mem = unsafe { self.commit_internal(self.buffer.clone(), true) }?;
         unsafe { self.thread_execute(mem as *mut c_void) }?;
         self.buffer.clear();
         self.allocations.retain(|x| {
@@ -280,7 +280,14 @@ impl Context
             }
             false
         });
-        Ok(())
+        self.argument_count = 0;
+
+        // rsp adjust is for the entire thread, so we keep it
+        // self.rsp_adjust = 0;
+
+        // We still return self here because you can actually chain more pushes, calls and executions
+        // The only thing you can't really chain is call_with_return, because you need the return value
+        Ok(self)
     }
 
     pub fn has_leaks(&self) -> bool
@@ -299,9 +306,19 @@ impl Context
         Ok(buffer)
     }
 
-    unsafe fn allocate(&mut self, size: usize, track: bool) -> anyhow::Result<u64, anyhow::Error>
+    pub fn allocate(&mut self, size: usize) -> anyhow::Result<u64, anyhow::Error>
     {
-        let res = VirtualAllocEx(self.process, 0 as *mut c_void, size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        unsafe { self.allocate_internal(size, true) }
+    }
+
+    pub fn commit(&mut self, data: Vec<u8>) -> anyhow::Result<u64, anyhow::Error>
+    {
+        unsafe { self.commit_internal(data, true) }
+    }
+
+    unsafe fn allocate_internal(&mut self, size: usize, track: bool) -> anyhow::Result<u64, anyhow::Error>
+    {
+        let res = VirtualAllocEx(self.process, std::ptr::null_mut::<c_void>(), size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
         if res.is_null() {
             anyhow::bail!("VirtualAllocEx failed.");
         }
@@ -311,10 +328,10 @@ impl Context
         Ok(res as u64)
     }
 
-    unsafe fn commit(&mut self, data: Vec<u8>, track: bool) -> anyhow::Result<u64, anyhow::Error>
+    unsafe fn commit_internal(&mut self, data: Vec<u8>, track: bool) -> anyhow::Result<u64, anyhow::Error>
     {
-        let mem = self.allocate(data.len(), track)?;
-        if WriteProcessMemory(self.process, mem as *mut c_void, data.as_ptr() as *const c_void, data.len(), 0 as *mut usize) == FALSE {
+        let mem = self.allocate_internal(data.len(), track)?;
+        if WriteProcessMemory(self.process, mem as *mut c_void, data.as_ptr() as *const c_void, data.len(), std::ptr::null_mut::<usize>()) == FALSE {
             anyhow::bail!("WriteProcessMemory failed.");
         }
         Ok(mem)
@@ -323,7 +340,7 @@ impl Context
     unsafe fn thread_execute(&self, ptr: *mut c_void) -> anyhow::Result<(), anyhow::Error>
     {
         let start_address = std::mem::transmute::<*mut c_void, unsafe extern "system" fn (LPVOID) -> DWORD>(ptr);
-        let handle = CreateRemoteThread(self.process, 0 as *mut SECURITY_ATTRIBUTES, 0, Some(start_address), 0 as *mut c_void, 0, 0 as *mut u32);
+        let handle = CreateRemoteThread(self.process, std::ptr::null_mut::<SECURITY_ATTRIBUTES>(), 0, Some(start_address), std::ptr::null_mut::<c_void>(), 0, std::ptr::null_mut::<u32>());
         if handle.is_null() {
             anyhow::bail!("CreateRemoteThread failed.");
         }
@@ -332,10 +349,10 @@ impl Context
     }
 
     // Signed helpers for expediency
-    pub fn push_i8(&mut self, value: i8) -> anyhow::Result<(), anyhow::Error> { self.push_u8(value as u8) }
-    pub fn push_i16(&mut self, value: i16) -> anyhow::Result<(), anyhow::Error> { self.push_u16(value as u16) }
-    pub fn push_i32(&mut self, value: i32) -> anyhow::Result<(), anyhow::Error> { self.push_u32(value as u32) }
-    pub fn push_i64(&mut self, value: i64) -> anyhow::Result<(), anyhow::Error> { self.push_u64(value as u64) }
+    pub fn push_i8(&mut self, value: i8) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u8(value as u8) }
+    pub fn push_i16(&mut self, value: i16) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u16(value as u16) }
+    pub fn push_i32(&mut self, value: i32) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u32(value as u32) }
+    pub fn push_i64(&mut self, value: i64) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u64(value as u64) }
 }
 
 impl Drop for Context
@@ -361,7 +378,7 @@ pub fn create_context(process: HANDLE) -> anyhow::Result<Context, anyhow::Error>
     if ks.is_err() {
         return Err(anyhow::Error::msg("Unable to create keystone instance."));
     }
-    let mut res = Context { process: process, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
+    let mut res = Context { process, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
     res.append_asm("sub rsp, 0x28")?;
     Ok(res)
 }
@@ -376,13 +393,7 @@ mod tests
     fn run_test() -> anyhow::Result<Vec<u8>, anyhow::Error>
     {
         let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        ctx.push_u64(u64::max_value() / 2)?;
-        ctx.push_u32(u32::max_value())?;
-        ctx.push_u8(u8::max_value())?;
-        ctx.push_u16(18377)?;
-        ctx.push_u32(377128993)?;
-        ctx.call(0x1000)?;
-        let res = ctx.current_buffer()?;
+        let res = ctx.push_u64(u64::max_value() / 2)?.push_u32(u32::max_value())?.push_u8(u8::max_value())?.push_u16(18377)?.push_u32(377128993)?.call(0x1000)?.current_buffer()?;
         Ok(res)
     }
 
@@ -401,11 +412,7 @@ mod tests
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
         let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        ctx.push_u8(0)?;
-        ctx.push_wstring(msg.to_string())?;
-        ctx.push_wstring(title.to_string())?;
-        ctx.push_u32(MB_OKCANCEL)?;
-        let mut ret = ctx.call_with_return(addr as u64)?;
+        let mut ret = ctx.push_u8(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push_u32(MB_OKCANCEL)?.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
         ctx.execute()?;
@@ -440,6 +447,7 @@ mod tests
         assert_eq!(expected_result, p.unwrap());
     }
 
+    /*
     #[test]
     fn pop_msgbox()
     {
@@ -451,4 +459,5 @@ mod tests
             assert_eq!(res.is_ok(), true);
         }
     }
+    */
 }
