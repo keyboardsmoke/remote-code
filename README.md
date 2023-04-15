@@ -18,19 +18,13 @@ A rust library which empowers the user to invoke functions remotely without inje
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
         let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        ctx.push_u8(0)?;
-        ctx.push_wstring(msg.to_string())?;
-        ctx.push_wstring(title.to_string())?;
-        ctx.push_u32(MB_OKCANCEL)?;
-        let mut ret = ctx.call_with_return(addr as u64)?;
+        let mut ret = ctx.push_u8(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push_u32(MB_OKCANCEL)?.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
         ctx.execute()?;
         let retval = ret.read()?;
         println!("ret: 0x{:X}", retval);
         println!("Leaks: {}", ctx.has_leaks());
-        // Not required, Drop is implemented and this will be deallocated automatically
-        // This is just for explicit deallocation
         println!("Is Return Deallocated first try: {}", ret.is_deallocated());
         ret.deallocate()?;
         println!("Is Return Deallocated second try: {}", ret.is_deallocated());
