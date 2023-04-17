@@ -1,8 +1,165 @@
-use winapi::{ctypes::c_void, shared::{ntdef::HANDLE, minwindef::{FALSE, LPVOID, DWORD}}, um::{memoryapi::{VirtualAllocEx, WriteProcessMemory, ReadProcessMemory, VirtualFreeEx}, winnt::{MEM_COMMIT, PAGE_EXECUTE_READWRITE, MEM_RELEASE}, processthreadsapi::CreateRemoteThread, minwinbase::SECURITY_ATTRIBUTES, synchapi::WaitForSingleObject, errhandlingapi::GetLastError}};
+use winapi::{ctypes::c_void, shared::{ntdef::HANDLE, minwindef::{LPVOID, DWORD}}, um::{processthreadsapi::CreateRemoteThread, minwinbase::SECURITY_ATTRIBUTES, synchapi::WaitForSingleObject}};
+
+pub trait AsmSerializer
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String);
+}
+
+impl AsmSerializer for u8
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        match index {
+            0 => {
+                (0, format!("mov cl, 0x{:X}", *self))
+            },
+            1 => {
+                (0, format!("mov dl, 0x{:X}", *self))
+            },
+            2 => {
+                (0, format!("mov r8b, 0x{:X}", *self))
+            },
+            3 => {
+                (0, format!("mov r9b, 0x{:X}", *self))
+            },
+            _ => {
+                (0, format!("push 0x{:X}", *self))
+            }
+        }
+    }
+}
+
+impl AsmSerializer for i8
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        (*self as u8).make_asm_push(index)
+    }
+}
+
+impl AsmSerializer for u16
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        match index {
+            0 => {
+                (0, format!("mov cx, 0x{:X}", *self))
+            },
+            1 => {
+                (0, format!("mov dx, 0x{:X}", *self))
+            },
+            2 => {
+                (0, format!("mov r8w, 0x{:X}", *self))
+            },
+            3 => {
+                (0, format!("mov r9w, 0x{:X}", *self))
+            },
+            _ => {
+                (0, format!("pushw 0x{:X}", *self))
+            }
+        }
+    }
+}
+
+impl AsmSerializer for i16
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        (*self as u16).make_asm_push(index)
+    }
+}
+
+impl AsmSerializer for u32
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        match index {
+            0 => {
+                (0, format!("mov ecx, 0x{:X}", *self))
+            },
+            1 => {
+                (0, format!("mov edx, 0x{:X}", *self))
+            },
+            2 => {
+                (0, format!("mov r8d, 0x{:X}", *self))
+            },
+            3 => {
+                (0, format!("mov r9d, 0x{:X}", *self))
+            },
+            _ => {
+                (*self as u64).make_asm_push(index)
+            }
+        }
+    }
+}
+
+impl AsmSerializer for i32
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        (*self as u32).make_asm_push(index)
+    }
+}
+
+impl AsmSerializer for u64
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        match index {
+            0 => {
+                (0, format!("movabs rcx, 0x{:X}", *self))
+            },
+            1 => {
+                (0, format!("movabs rdx, 0x{:X}", *self))
+            },
+            2 => {
+                (0, format!("movabs r8, 0x{:X}", *self))
+            },
+            3 => {
+                (0, format!("movabs r9, 0x{:X}", *self))
+            },
+            _ => {
+                (0, format!("movabs rax, 0x{:X}; push rax", *self))
+            }
+        }
+    }
+}
+
+impl AsmSerializer for i64
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        (*self as u64).make_asm_push(index)
+    }
+}
+
+impl AsmSerializer for f64
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        match index {
+            0 => {
+                (0, format!("movabs rax, 0x{:X}; movq xmm0, rax", *self as u64))
+            },
+            1 => {
+                (0, format!("movabs rax, 0x{:X}; movq xmm1, rax", *self as u64))
+            },
+            2 => {
+                (0, format!("movabs rax, 0x{:X}; movq xmm2, rax", *self as u64))
+            },
+            3 => {
+                (0, format!("movabs rax, 0x{:X}; movq xmm3, rax", *self as u64))
+            },
+            _ => {
+                (0x10, format!("movabs rax, 0x{:X}; movq xmm4, rax; sub rsp, 0x10; movdqu [rsp], xmm4", *self as u64))
+            }
+        }
+    }
+}
 
 pub struct ReturnValue
 {
-    process: HANDLE,
+    process: Box<remote_utils::Process>,
     address: u64
 }
 
@@ -10,31 +167,34 @@ impl ReturnValue
 {
     pub fn read(&self) -> anyhow::Result<u64, anyhow::Error>
     {
-        let buf: [u8; std::mem::size_of::<u64>()] = [0, 0, 0, 0, 0, 0, 0, 0];
-        let mut read_size: usize = 0;
-        unsafe {
-            if ReadProcessMemory(self.process, self.address as *mut c_void, buf.as_ptr() as *mut c_void, std::mem::size_of::<u64>(), &mut read_size) == FALSE {
-                anyhow::bail!("ReadProcessMemory failed. {}, read: {}", GetLastError(), read_size);
-            }
-        }
-
-        let res = u64::from_le_bytes(buf);
+        let value = self.process.read_memory(self.address, std::mem::size_of::<u64>())?;
+        let raw_mem = value.into_boxed_slice();
+        let box_mem = unsafe { Box::from_raw(Box::into_raw(raw_mem) as *mut [u8; 8]) };
+        let unbox = *box_mem;
+        let res = u64::from_le_bytes(unbox);
         Ok(res)
     }
 
     pub fn deallocate(&mut self) -> anyhow::Result<(), anyhow::Error>
     {
-        let res = unsafe { VirtualFreeEx(self.process, self.address as *mut c_void, 0, MEM_RELEASE) };
-        if res == 0 {
-            anyhow::bail!("VirtualFreeEx failed (Code: 0x{:X})", res);
-        }
-        self.address = 0;
-        Ok(())
+        let ptr = remote_utils::Pointer::from(self.address as *mut u8);
+        self.process.deallocate(ptr)
     }
 
     pub fn is_deallocated(&self) -> bool
     {
         self.address == 0
+    }
+}
+
+impl AsmSerializer for ReturnValue
+{
+    fn make_asm_push(&self, index: usize) -> (u32, String)
+    {
+        if self.is_deallocated() {
+            panic!("Attempt to reference a deallocated return value.");
+        }
+        self.address.make_asm_push(index)
     }
 }
 
@@ -58,7 +218,7 @@ impl Drop for ReturnValue
 
 pub struct Context
 {
-    process: HANDLE,
+    process: remote_utils::Process,
     engine: keystone_engine::Keystone,
     buffer: Vec<u8>,
     argument_count: usize,
@@ -75,158 +235,34 @@ impl Context
         Ok(self)
     }
 
-    pub fn push_buffer_address(&mut self, value: Vec<u8>) -> anyhow::Result<&mut Context, anyhow::Error>
+    // Will allocate and commit the vec to the remote memory, and push the address to it on the stack
+    pub fn push_vec_address(&mut self, value: Vec<u8>) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         let res = unsafe { self.commit_internal(value, true) }?;
-        self.push_u64(res)
+        self.push(res)
     }
 
-    pub fn push_u8(&mut self, value: u8) -> anyhow::Result<&mut Context, anyhow::Error>
+    pub fn push_array_address<const COUNT: usize>(&mut self, value: &[u8; COUNT]) -> anyhow::Result<&mut Context, anyhow::Error>
     {
-        match self.argument_count {
-            0 => {
-                self.append_asm(format!("mov cl, 0x{:X}", value).as_str())?;
-            },
-            1 => {
-                self.append_asm(format!("mov dl, 0x{:X}", value).as_str())?;
-            },
-            2 => {
-                self.append_asm(format!("mov r8b, 0x{:X}", value).as_str())?;
-            },
-            3 => {
-                self.append_asm(format!("mov r9b, 0x{:X}", value).as_str())?;
-            },
-            _ => {
-                self.append_asm(format!("push 0x{:X}", value).as_str())?;
-            }
+        self.push_vec_address(value.to_vec())
+    }
+
+    pub fn push(&mut self, value: impl AsmSerializer) -> anyhow::Result<&mut Context, anyhow::Error>
+    {
+        let (rsp_adjust, asm) = value.make_asm_push(self.argument_count);
+        self.append_asm(asm.as_str())?;
+        if rsp_adjust > 0 {
+            self.rsp_adjust += rsp_adjust as u64;
         }
         self.argument_count += 1;
         Ok(self)
-    }
-
-    pub fn push_u16(&mut self, value: u16) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        match self.argument_count {
-            0 => {
-                self.append_asm(format!("mov cx, 0x{:X}", value).as_str())?;
-            },
-            1 => {
-                self.append_asm(format!("mov dx, 0x{:X}", value).as_str())?;
-            },
-            2 => {
-                self.append_asm(format!("mov r8w, 0x{:X}", value).as_str())?;
-            },
-            3 => {
-                self.append_asm(format!("mov r9w, 0x{:X}", value).as_str())?;
-            },
-            _ => {
-                self.append_asm(format!("pushw 0x{:X}", value).as_str())?;
-            }
-        }
-        self.argument_count += 1;
-        Ok(self)
-    }
-
-    pub fn push_u32(&mut self, value: u32) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        match self.argument_count {
-            0 => {
-                self.append_asm(format!("mov ecx, 0x{:X}", value).as_str())?;
-            },
-            1 => {
-                self.append_asm(format!("mov edx, 0x{:X}", value).as_str())?;
-            },
-            2 => {
-                self.append_asm(format!("mov r8d, 0x{:X}", value).as_str())?;
-            },
-            3 => {
-                self.append_asm(format!("mov r9d, 0x{:X}", value).as_str())?;
-            },
-            _ => {
-                self.push_u64(value as u64)?;
-            }
-        }
-        self.argument_count += 1;
-        Ok(self)
-    }
-
-    pub fn push_u64(&mut self, value: u64) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        match self.argument_count {
-            0 => {
-                self.append_asm(format!("movabs rcx, 0x{:X}", value).as_str())?;
-            },
-            1 => {
-                self.append_asm(format!("movabs rdx, 0x{:X}", value).as_str())?;
-            },
-            2 => {
-                self.append_asm(format!("movabs r8, 0x{:X}", value).as_str())?;
-            },
-            3 => {
-                self.append_asm(format!("movabs r9, 0x{:X}", value).as_str())?;
-            },
-            _ => {
-                // rax is clobbered
-                self.append_asm(format!("movabs rax, 0x{:X}; push rax", value).as_str())?;
-            }
-        }
-        self.argument_count += 1;
-        Ok(self)
-    }
-
-    pub fn push_f32(&mut self, value: f32) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        self.push_f64(value as f64)
-    }
-
-    pub fn push_f64(&mut self, value: f64) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        // RAX is going to get clobbered no matter what here...
-        // a in XMM0, b in XMM1, c in XMM2, d in XMM3, f then e pushed on stack
-        match self.argument_count {
-            0 => {
-                self.append_asm(format!("movabs rax, 0x{:X}", value as u64).as_str())?;
-                self.append_asm("movq xmm0, rax")?;
-            },
-            1 => {
-                self.append_asm(format!("movabs rax, 0x{:X}", value as u64).as_str())?;
-                self.append_asm("movq xmm1, rax")?;
-            },
-            2 => {
-                self.append_asm(format!("movabs rax, 0x{:X}", value as u64).as_str())?;
-                self.append_asm("movq xmm2, rax")?;
-            },
-            3 => {
-                self.append_asm(format!("movabs rax, 0x{:X}", value as u64).as_str())?;
-                self.append_asm("movq xmm3, rax")?;
-            },
-            _ => {
-                // push xmm4 on to the stack manually.
-                self.append_asm(format!("movabs rax, 0x{:X}", value as u64).as_str())?;
-                self.append_asm("movq xmm4, rax")?;
-                self.append_asm("sub rsp, 0x10")?;
-                self.append_asm("movdqu [rsp], xmm4")?;
-                self.rsp_adjust += 0x10;
-            }
-        }
-        self.argument_count += 1;
-        Ok(self)
-    }
-
-    // Push a reference to an earlier return value
-    pub fn push_arg(&mut self, value: ReturnValue) -> anyhow::Result<&mut Context, anyhow::Error>
-    {
-        if value.is_deallocated() {
-            anyhow::bail!("push_arg failed because the ReturnValue sent to it was prematurely deallocated.");
-        }
-        self.push_u64(value.address)
     }
 
     pub fn push_cstring(&mut self, value: String) -> anyhow::Result<&mut Context, anyhow::Error>
     {
         let mut data: Vec<u8> = value.bytes().collect();
         data.push(0); // make sure it's null terminated.
-        self.push_buffer_address(data)
+        self.push_vec_address(data)
     }
 
     pub fn push_wstring(&mut self, value: String) -> anyhow::Result<&mut Context, anyhow::Error>
@@ -240,7 +276,7 @@ impl Context
             v.append(&mut i.to_le_bytes().to_vec());
         }
         v.append(&mut vec![0x00, 0x00]); // make sure it's null terminated
-        self.push_buffer_address(v)
+        self.push_vec_address(v)
     }
 
     pub fn call(&mut self, dest: u64) -> anyhow::Result<&mut Context, anyhow::Error>
@@ -259,7 +295,7 @@ impl Context
         self.append_asm("call rax")?;
         self.append_asm(format!("movabs ds:[0x{:X}], rax", ptr).as_str())?;
         self.call(dest)?;
-        Ok(ReturnValue { process: self.process, address: ptr })
+        Ok(ReturnValue { process: Box::new(remote_utils::Process { handle: remote_utils::Handle { handle: self.process.handle().generic() } }), address: ptr })
     }
 
     pub fn execute(&mut self) -> anyhow::Result<&mut Context, anyhow::Error>
@@ -273,8 +309,8 @@ impl Context
         unsafe { self.thread_execute(mem as *mut c_void) }?;
         self.buffer.clear();
         self.allocations.retain(|x| {
-            let res = unsafe { VirtualFreeEx(self.process, *x as *mut c_void, 0, MEM_RELEASE) };
-            if res == 0 {
+            let dec = self.process.deallocate(remote_utils::Pointer::from(*x as *mut c_void));
+            if dec.is_err() {
                 println!("Warning: Failed to deallocate memory at 0x{:X}", *x);
                 return true;
             }
@@ -318,41 +354,34 @@ impl Context
 
     unsafe fn allocate_internal(&mut self, size: usize, track: bool) -> anyhow::Result<u64, anyhow::Error>
     {
-        let res = VirtualAllocEx(self.process, std::ptr::null_mut::<c_void>(), size, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-        if res.is_null() {
-            anyhow::bail!("VirtualAllocEx failed.");
+        let res = self.process.allocate(size);
+        if res.is_err() {
+            anyhow::bail!("remote allocate failed.");
         }
+        let addr = res.ok().unwrap().u64();
         if track { 
-            self.allocations.push(res as u64);
+            self.allocations.push(addr);
         }
-        Ok(res as u64)
+        Ok(addr)
     }
 
     unsafe fn commit_internal(&mut self, data: Vec<u8>, track: bool) -> anyhow::Result<u64, anyhow::Error>
     {
         let mem = self.allocate_internal(data.len(), track)?;
-        if WriteProcessMemory(self.process, mem as *mut c_void, data.as_ptr() as *const c_void, data.len(), std::ptr::null_mut::<usize>()) == FALSE {
-            anyhow::bail!("WriteProcessMemory failed.");
-        }
+        self.process.write_memory(mem, &data)?;
         Ok(mem)
     }
 
     unsafe fn thread_execute(&self, ptr: *mut c_void) -> anyhow::Result<(), anyhow::Error>
     {
         let start_address = std::mem::transmute::<*mut c_void, unsafe extern "system" fn (LPVOID) -> DWORD>(ptr);
-        let handle = CreateRemoteThread(self.process, std::ptr::null_mut::<SECURITY_ATTRIBUTES>(), 0, Some(start_address), std::ptr::null_mut::<c_void>(), 0, std::ptr::null_mut::<u32>());
+        let handle = CreateRemoteThread(self.process.handle().generic() as *mut c_void, std::ptr::null_mut::<SECURITY_ATTRIBUTES>(), 0, Some(start_address), std::ptr::null_mut::<c_void>(), 0, std::ptr::null_mut::<u32>());
         if handle.is_null() {
             anyhow::bail!("CreateRemoteThread failed.");
         }
         WaitForSingleObject(handle, winapi::um::winbase::INFINITE);
         Ok(())
     }
-
-    // Signed helpers for expediency
-    pub fn push_i8(&mut self, value: i8) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u8(value as u8) }
-    pub fn push_i16(&mut self, value: i16) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u16(value as u16) }
-    pub fn push_i32(&mut self, value: i32) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u32(value as u32) }
-    pub fn push_i64(&mut self, value: i64) -> anyhow::Result<&mut Context, anyhow::Error> { self.push_u64(value as u64) }
 }
 
 impl Drop for Context
@@ -361,8 +390,8 @@ impl Drop for Context
     {
         if !self.allocations.is_empty() {
             self.allocations.retain(|x| {
-                let res = unsafe { VirtualFreeEx(self.process, *x as *mut c_void, 0, MEM_RELEASE) };
-                if res == 0 {
+                let res = self.process.deallocate(remote_utils::Pointer::from(*x as *mut c_void));
+                if res.is_err() {
                     println!("Warning: Failed to deallocate memory at 0x{:X}", *x);
                     return true;
                 }
@@ -378,7 +407,8 @@ pub fn create_context(process: HANDLE) -> anyhow::Result<Context, anyhow::Error>
     if ks.is_err() {
         return Err(anyhow::Error::msg("Unable to create keystone instance."));
     }
-    let mut res = Context { process, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
+    let h = remote_utils::Handle { handle: process as u64 };
+    let mut res = Context { process: remote_utils::Process { handle: h }, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
     res.append_asm("sub rsp, 0x28")?;
     Ok(res)
 }
@@ -393,11 +423,12 @@ mod tests
     fn run_test() -> anyhow::Result<Vec<u8>, anyhow::Error>
     {
         let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        let res = ctx.push_u64(u64::max_value() / 2)?.push_u32(u32::max_value())?.push_u8(u8::max_value())?.push_u16(18377)?.push_u32(377128993)?.call(0x1000)?.current_buffer()?;
+        let res = ctx.push((u64::max_value() / 2) as u64)?.push(u32::max_value())?.push(u8::max_value())?.push(18377 as u16)?.push(377128993 as u32)?.call(0x1000)?.current_buffer()?;
         Ok(res)
     }
 
     // Example of usage
+    #[cfg(target_os = "windows")]
     #[allow(unused)]
     fn call_msgbox(msg: &str, title: &str) -> anyhow::Result<(), anyhow::Error>
     {
@@ -412,7 +443,7 @@ mod tests
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
         let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        let mut ret = ctx.push_u8(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push_u32(MB_OKCANCEL)?.call_with_return(addr as u64)?;
+        let mut ret = ctx.push(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push(MB_OKCANCEL)?.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
         ctx.execute()?;
@@ -447,8 +478,8 @@ mod tests
         assert_eq!(expected_result, p.unwrap());
     }
 
-    /*
     #[test]
+    #[cfg(target_os = "windows")]
     fn pop_msgbox()
     {
         let res = call_msgbox("Hello, World!", "Hey!");
@@ -459,5 +490,4 @@ mod tests
             assert_eq!(res.is_ok(), true);
         }
     }
-    */
 }
