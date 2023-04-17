@@ -4,6 +4,7 @@ A rust library which empowers the user to invoke functions remotely without inje
 
 ```rust
     // Example of usage
+    #[cfg(target_os = "windows")]
     #[allow(unused)]
     fn call_msgbox(msg: &str, title: &str) -> anyhow::Result<(), anyhow::Error>
     {
@@ -17,8 +18,8 @@ A rust library which empowers the user to invoke functions remotely without inje
         if addr.is_null() {
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
-        let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
-        let mut ret = ctx.push_u8(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push_u32(MB_OKCANCEL)?.call_with_return(addr as u64)?;
+        let mut ctx = create_from_process(remote_utils::Process::local()?)?;
+        let mut ret = ctx.push(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push(MB_OKCANCEL)?.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
         ctx.execute()?;
