@@ -474,18 +474,17 @@ checksum = "f162c6dd7b008981e4d40210aca20b4bd0f9b60ca9271061b07f78537722f2e1"
 
 [[package]]
 name = "remote-code"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "keystone-engine",
  "remote-utils",
- "winapi",
 ]
 
 [[package]]
 name = "remote-utils"
-version = "0.1.4"
-source = "git+https://github.com/keyboardsmoke/remote-utils.git#a1ceaf9d83f403a737c5b670c1050f9bf76bd572"
+version = "0.2.0"
+source = "git+https://github.com/keyboardsmoke/remote-utils.git#701236d68b3ca12c2a1eaf6487abb0fff26eded1"
 dependencies = [
  "anyhow",
  "proc-maps",

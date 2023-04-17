@@ -1,12 +1,11 @@
 [package]
 name = "remote-code"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-winapi = { version = "0.3.8", features = ["winbase", "errhandlingapi", "minwindef", "memoryapi", "processthreadsapi", "psapi", "synchapi", "winuser"] }
 anyhow = { version = "1.0.70", features = ["backtrace"] }
 keystone-engine = { version = "0.1.0", features = ["build-from-src"] }
-remote-utils = { git = "https://github.com/keyboardsmoke/remote-utils.git", version = "0.1.4" }
+remote-utils = { git = "https://github.com/keyboardsmoke/remote-utils.git", version = "0.2.0" }

@@ -1,5 +1,3 @@
-use winapi::{ctypes::c_void, shared::{ntdef::HANDLE, minwindef::{LPVOID, DWORD}}, um::{processthreadsapi::CreateRemoteThread, minwinbase::SECURITY_ATTRIBUTES, synchapi::WaitForSingleObject}};
-
 pub trait AsmSerializer
 {
     fn make_asm_push(&self, index: usize) -> (u32, String);
@@ -306,10 +304,10 @@ impl Context
         self.append_asm(format!("add rsp, 0x{:02X}", rsp_adjust_amount).as_str())?;
         self.append_asm("ret")?;
         let mem = unsafe { self.commit_internal(self.buffer.clone(), true) }?;
-        unsafe { self.thread_execute(mem as *mut c_void) }?;
+        unsafe { self.thread_execute(remote_utils::Pointer::from(mem as *mut u8))? };
         self.buffer.clear();
         self.allocations.retain(|x| {
-            let dec = self.process.deallocate(remote_utils::Pointer::from(*x as *mut c_void));
+            let dec = self.process.deallocate(remote_utils::Pointer::from(*x as *mut u8));
             if dec.is_err() {
                 println!("Warning: Failed to deallocate memory at 0x{:X}", *x);
                 return true;
@@ -372,14 +370,9 @@ impl Context
         Ok(mem)
     }
 
-    unsafe fn thread_execute(&self, ptr: *mut c_void) -> anyhow::Result<(), anyhow::Error>
+    unsafe fn thread_execute(&self, ptr: remote_utils::Pointer) -> anyhow::Result<(), anyhow::Error>
     {
-        let start_address = std::mem::transmute::<*mut c_void, unsafe extern "system" fn (LPVOID) -> DWORD>(ptr);
-        let handle = CreateRemoteThread(self.process.handle().generic() as *mut c_void, std::ptr::null_mut::<SECURITY_ATTRIBUTES>(), 0, Some(start_address), std::ptr::null_mut::<c_void>(), 0, std::ptr::null_mut::<u32>());
-        if handle.is_null() {
-            anyhow::bail!("CreateRemoteThread failed.");
-        }
-        WaitForSingleObject(handle, winapi::um::winbase::INFINITE);
+        self.process.execute(ptr)?;
         Ok(())
     }
 }
@@ -390,7 +383,7 @@ impl Drop for Context
     {
         if !self.allocations.is_empty() {
             self.allocations.retain(|x| {
-                let res = self.process.deallocate(remote_utils::Pointer::from(*x as *mut c_void));
+                let res = self.process.deallocate(remote_utils::Pointer::from(*x as *mut u8));
                 if res.is_err() {
                     println!("Warning: Failed to deallocate memory at 0x{:X}", *x);
                     return true;
@@ -401,14 +394,25 @@ impl Drop for Context
     }
 }
 
-pub fn create_context(process: HANDLE) -> anyhow::Result<Context, anyhow::Error>
+pub fn create_from_pid(pid: u32) -> anyhow::Result<Context, anyhow::Error>
 {
     let ks = keystone_engine::Keystone::new(keystone_engine::Arch::X86, keystone_engine::Mode::MODE_64);
     if ks.is_err() {
         return Err(anyhow::Error::msg("Unable to create keystone instance."));
     }
-    let h = remote_utils::Handle { handle: process as u64 };
-    let mut res = Context { process: remote_utils::Process { handle: h }, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
+    let proc = remote_utils::Process::from_pid(pid)?;
+    let mut res = Context { process: proc, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
+    res.append_asm("sub rsp, 0x28")?;
+    Ok(res)
+}
+
+pub fn create_from_process(process: remote_utils::Process) -> anyhow::Result<Context, anyhow::Error>
+{
+    let ks = keystone_engine::Keystone::new(keystone_engine::Arch::X86, keystone_engine::Mode::MODE_64);
+    if ks.is_err() {
+        return Err(anyhow::Error::msg("Unable to create keystone instance."));
+    }
+    let mut res = Context { process, engine: ks.unwrap(), buffer: Vec::new(), allocations: Vec::new(), argument_count: 0, rsp_adjust: 0 };
     res.append_asm("sub rsp, 0x28")?;
     Ok(res)
 }
@@ -416,17 +420,16 @@ pub fn create_context(process: HANDLE) -> anyhow::Result<Context, anyhow::Error>
 #[cfg(test)]
 mod tests
 {
-    use winapi::um::{processthreadsapi::GetCurrentProcess, libloaderapi::{GetProcAddress, GetModuleHandleA}, winuser::MB_OKCANCEL};
-
     use super::*;
 
     fn run_test() -> anyhow::Result<Vec<u8>, anyhow::Error>
     {
-        let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
+        let mut ctx = create_from_process(remote_utils::Process::local()?)?;
         let res = ctx.push((u64::max_value() / 2) as u64)?.push(u32::max_value())?.push(u8::max_value())?.push(18377 as u16)?.push(377128993 as u32)?.call(0x1000)?.current_buffer()?;
         Ok(res)
     }
 
+/*
     // Example of usage
     #[cfg(target_os = "windows")]
     #[allow(unused)]
@@ -442,7 +445,7 @@ mod tests
         if addr.is_null() {
             anyhow::bail!("GetProcAddress(user32, \"MessageBoxA\") returned nullptr.");
         }
-        let mut ctx = create_context(unsafe { GetCurrentProcess() })?;
+        let mut ctx = create_from_process(remote_utils::Process::local()?)?;
         let mut ret = ctx.push(0)?.push_wstring(msg.to_string())?.push_wstring(title.to_string())?.push(MB_OKCANCEL)?.call_with_return(addr as u64)?;
         let buf = ctx.current_buffer()?;
         println!("Data: {:02X?}", buf);
@@ -455,6 +458,20 @@ mod tests
         println!("Is Return Deallocated second try: {}", ret.is_deallocated());
         Ok(())
     }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn pop_msgbox()
+    {
+        let res = call_msgbox("Hello, World!", "Hey!");
+        if res.is_err() {
+            let err = res.err().unwrap();
+            println!("Backtrace for {}: {}", err.to_string(), err.backtrace());
+        } else {
+            assert_eq!(res.is_ok(), true);
+        }
+    }
+*/
 
     #[test]
     fn test()
@@ -476,18 +493,5 @@ mod tests
         let p = run_test();
         assert_ne!(p.is_err(), true);
         assert_eq!(expected_result, p.unwrap());
-    }
-
-    #[test]
-    #[cfg(target_os = "windows")]
-    fn pop_msgbox()
-    {
-        let res = call_msgbox("Hello, World!", "Hey!");
-        if res.is_err() {
-            let err = res.err().unwrap();
-            println!("Backtrace for {}: {}", err.to_string(), err.backtrace());
-        } else {
-            assert_eq!(res.is_ok(), true);
-        }
     }
 }
